@@ -1,0 +1,750 @@
+# Network Security Technical Controls: TP4, TP5, TP6 - Complete Summary
+
+## PART 1: TP4 - Host-Based Firewall (Windows Firewall)
+
+### What is Host-Based Firewall?
+A **host-based firewall** is software installed on individual machines that:
+- Filters inbound and outbound traffic on that specific computer
+- Provides **defense in depth** when combined with network firewalls
+- Protects against malware, viruses, and unauthorized remote access
+- Allows/blocks specific programs, ports, and protocols per application
+
+### Key Concept: Defense in Depth
+Multiple layers of security = if one layer fails, others protect you
+```
+Internet → Network Firewall (TP5, TP6) → Host Firewall (TP4) → Application
+```
+
+---
+
+## TP4: Practical Implementation
+
+### SETUP
+**Machines:**
+- Windows Workstation: Machine-1 (IP: 10.10.1.11)
+- Windows Server: Web Server (IP: 10.10.1.16)
+- Network: 10.10.1.0/24 (same internal network)
+
+**Services to Install on Web Server:**
+1. **IIS Web Server (HTTP on port 80)**
+2. **IIS FTP Server (FTP on port 21)**
+3. **Remote Desktop (RDP on port 3389)**
+
+### Installation Commands & Steps
+
+#### Install IIS Web Server
+**Why:** To test HTTP/HTTPS access from remote machines
+```
+Server Manager → Manage → Add Roles and Features
+→ Server Roles → Check "Web Server (IIS)"
+→ Role Services: Select
+   - Default Document
+   - HTTP Logging
+   - Static Content
+   - ASP.NET / .NET Extensibility (if needed for ASP.NET sites)
+→ Install
+```
+
+#### Install IIS FTP Server
+**Why:** To test FTP access and then block it with firewall rules
+```
+Server Manager → Manage → Add Roles and Features
+→ Role Services → Web Server (IIS) → FTP Server
+→ Check:
+   - FTP Service
+   - FTP Extensibility (optional for advanced config)
+→ Install
+```
+
+**FTP depends on IIS - must install IIS first**
+
+#### Enable Remote Desktop
+**Why:** To test remote access before and after applying firewall rules
+```
+Right-click Start Menu → System
+→ Remote settings (left menu)
+→ Remote tab: Check "Allow remote connections to this computer"
+→ OK
+```
+
+---
+
+### Testing Remote Access (BEFORE Firewall Blocking)
+
+#### Step 1: Connect from Machine-1 to Web Server
+```
+Admin Machine-1 → Start Menu → Type "Remote Desktop Connection"
+→ Enter
+```
+
+#### Step 2: RDP Connection Details
+```
+Computer: 10.10.1.16 (Web Server IP)
+Username: Administrator
+Password: admin@123
+```
+
+**Result:** Successfully connects because no firewall rules block RDP yet
+
+---
+
+### Blocking Remote Desktop with Windows Firewall
+
+#### Enable Windows Firewall with Recommended Settings
+**Why:** Default deny-all policy for security
+```
+Web Server:
+Control Panel → System and Security → Windows Firewall
+→ Click "Use recommended settings"
+```
+
+**What this does:**
+- Enables inbound rule blocking for Domain, Private, and Public networks
+- Blocks all connections not explicitly allowed
+- Default policy: BLOCK incoming, ALLOW outgoing
+
+#### Block Remote Desktop Rules
+
+**Why block RDP:** Prevent unauthorized remote access to the server
+
+**Step 1: Access Advanced Settings**
+```
+Windows Firewall → Advanced Settings (left panel)
+```
+
+**Step 2: Find and Block RDP Rules**
+Three RDP rules must be blocked:
+
+**Rule 1: Remote Desktop-Shadow (TCP-In)**
+```
+Inbound Rules → Search "Remote Desktop-Shadow (TCP-In)"
+→ Double-click → Select "Block the connection" → OK
+```
+**Why:** Blocks remote desktop session shadowing (monitoring sessions)
+
+**Rule 2: Remote Desktop-User Mode (TCP-In)**
+```
+Inbound Rules → Search "Remote Desktop-User Mode (TCP-In)"
+→ Double-click → Select "Block the connection" → OK
+```
+**Why:** Blocks the main RDP protocol on port 3389/TCP
+
+**Rule 3: Remote Desktop-User Mode (UDP-In)**
+```
+Inbound Rules → Search "Remote Desktop-User Mode (UDP-In)"
+→ Double-click → Select "Block the connection" → OK
+```
+**Why:** Blocks RDP on UDP (faster but less reliable)
+
+**Result:** Attempt to connect from Machine-1 will fail with error:
+```
+"Remote Desktop can't connect to the remote computer for one of these reasons:
+1) Remote access to the server is not enabled
+2) The remote computer is turned off
+3) The remote computer is not available on the network"
+```
+
+---
+
+### Blocking FTP Access
+
+**Why block FTP:** FTP transmits credentials in plaintext (security risk)
+
+#### Block FTP Rules
+Web Server firewall must block all FTP variants:
+
+**Rule 1: FTP Server (FTP Traffic-In)**
+```
+Windows Firewall with Advanced Security
+→ Inbound Rules
+→ Search "FTP Server (FTP Traffic-In)"
+→ Properties → Select "Block the connection" → OK
+```
+**Why:** Blocks standard FTP on port 21
+
+#### Test FTP Before Blocking
+```
+Admin Machine-1 Command Prompt:
+ftp 10.10.1.16
+Username: Administrator
+Password: admin@123
+```
+**Result Before Blocking:** Successful connection
+```
+Connected to 10.10.1.16.
+220 Microsoft FTP Service
+User logged in.
+```
+
+**Result After Blocking:** Connection times out
+```
+ftp: connect :Connection timed out
+```
+
+#### Block Additional FTP Variants
+**Rule 2: FTP Server Passive (FTP Passive Traffic-In)**
+```
+Why: Blocks passive FTP mode (for firewall traversal)
+Block the connection
+```
+
+**Rule 3: FTP Server Secure (FTP SSL Traffic-In)**
+```
+Why: Blocks FTPS (FTP over SSL)
+Block the connection
+```
+
+---
+
+### Allow Specific Services (Optional)
+To re-allow FTP after blocking:
+```
+FTP Server (FTP Traffic-In) → Properties → Select "Allow the connection"
+```
+
+---
+
+## PART 2: TP5 - Network Firewall (pfSense) - Website Blocking
+
+### What is Network Firewall?
+A **network firewall** (gateway firewall) is:
+- Hardware/software that sits between network and internet
+- Inspects ALL traffic for the entire network
+- Blocks/allows based on rules (IP, port, protocol)
+- Examples: pfSense, Cisco ASA, Fortinet FortiGate
+
+### Key Concept: Aliases
+**Aliases** are groups of IP addresses or domains
+- Instead of creating 1 rule per IP, create 1 rule for an alias
+- Simplifies management: change 1 alias instead of 100 rules
+
+```
+Without Aliases: 1 rule per website = 100 rules
+BlockedWebsites Alias: Contains 100 websites = 1 firewall rule
+```
+
+---
+
+## TP5: Blocking Websites with pfSense
+
+### Architecture
+```
+Internet
+    ↓
+pfSense Firewall (10.10.1.1)
+    ↓
+LAN Network (10.10.1.0/24)
+    ├─ Machine-1 Admin (10.10.1.11)
+    └─ Web Server (10.10.1.16)
+```
+
+### Step 1: Access pfSense Web Interface
+
+**Why:** Configure firewall from web dashboard
+
+```
+Any machine on LAN:
+Browser → https://10.10.1.1
+Click Advanced → Proceed to 10.10.1.1 (unsafe)
+Username: admin
+Password: pfsense
+```
+
+### Step 2: Find Website IP Address
+
+**Why:** Firewall rules work with IPs, not domain names
+
+```
+Admin Machine-1 Command Prompt:
+ping rediff.com
+```
+
+**Output Example:**
+```
+PING rediff.com [84.53.185.208] with 32 bytes of data:
+Reply from 84.53.185.208: bytes=32 time=19ms TTL=49
+```
+
+**Note:** Some websites have multiple IPs - add all of them
+
+### Step 3: Create Alias for Blocked Websites
+
+**Why:** One alias = one firewall rule instead of many
+
+```
+pfSense Dashboard:
+Firewall → Aliases → IP tab
+Click "Add" button
+```
+
+**Configure Alias Properties:**
+```
+Name: BlockedWebsites
+Description: Restrict access to unwanted websites
+Type: Host(s)
+```
+
+**Add Website Information:**
+```
+IP or FQDN: www.rediff.com
+Description: Site URL
+
+Click "Add Host" button:
+IP or FQDN: 84.53.185.208
+Description: Site IP address
+```
+
+**Save the Alias:**
+```
+Click "Save" → Click "Apply Changes"
+```
+
+### Step 4: Create Firewall Rule
+
+**Why:** Rules tell firewall what to block/allow
+
+```
+Firewall → Rules → LAN tab
+Click "Add" button (up arrow)
+```
+
+**Configure Rule Details:**
+```
+Action: Block (deny access)
+Interface: LAN
+Address Family: IPv4
+Protocol: TCP/UDP (both web protocols)
+```
+
+**Source Section:**
+```
+Source: any (all computers)
+```
+
+**Destination Section:**
+```
+Destination: Single host or alias
+Select: BlockedWebsites (our alias)
+Destination Port Range: any (all ports)
+```
+
+**Extra Options:**
+```
+Description: Restrict access to unwanted Websites
+```
+
+**Save and Apply:**
+```
+Click "Save" → Firewall/Rules page appears
+Click "Apply Changes"
+```
+
+**Status Message:**
+```
+"The changes have been applied successfully. 
+The firewall rules are now reloading in the background."
+```
+
+### Test Website Access
+
+**Before Blocking (Step 1):**
+```
+Web Server Browser:
+Type: http://www.rediff.com
+Result: Website loads successfully ✓
+```
+
+**After Blocking (Step 4):**
+```
+Web Server Browser:
+Type: http://www.rediff.com
+Result: "This site can't be reached" ✗
+pfSense firewall blocked the connection
+```
+
+---
+
+## PART 3: TP6 - pfSense Port Blocking (HTTP Port 80)
+
+### Scenario
+Block HTTP (port 80) but allow HTTPS (port 443)
+- Forces users to secure websites
+- Prevents unencrypted web traffic
+
+### How It Works
+```
+HTTP  (port 80)  → BLOCKED by firewall rule
+HTTPS (port 443) → ALLOWED (no rule blocks it)
+```
+
+### Step 1: Access pfSense
+
+```
+pfSense Dashboard:
+Firewall → Rules → LAN
+```
+
+### Step 2: Create Port Blocking Rule
+
+**Why:** Block specific port, not all traffic to a host
+
+```
+Click "Add" button (up arrow)
+```
+
+**Configure Rule:**
+```
+Action: Reject (tell sender connection refused)
+Interface: LAN
+Address Family: IPv4
+Protocol: TCP/UDP
+```
+
+**Source:**
+```
+Source: any (all computers)
+```
+
+**Destination:**
+```
+Destination: any (any destination)
+Destination Port Range: HTTP (80)
+  (This is pre-defined port in dropdown)
+```
+
+**Description:**
+```
+Description: Rule for Rejecting any website using http (80) port
+```
+
+**Save:**
+```
+Click "Save" → Click "Apply Changes"
+```
+
+### Step 3: Test HTTP Blocking
+
+**Before Rule:**
+```
+Web Server Browser:
+Type: http://certifiedhacker.com/
+Result: Website loads ✓
+```
+
+**After Rule:**
+```
+Web Server Browser:
+Type: http://certifiedhacker.com/
+Result: "This site can't be reached" ✗
+(ERR_CONNECTION_REFUSED)
+```
+
+**Why Reject vs Block:**
+- **Block:** Silently drops packets (slower timeout)
+- **Reject:** Immediately sends "connection refused" (faster user feedback)
+
+---
+
+## TP6 ADVANCED: Time-Based Rules (Schedules)
+
+### Concept: Rules Active Only During Working Hours
+Block HTTP only 9 AM - 5 PM, allow after hours
+
+### Step 1: Create Schedule
+
+**Why:** Control when rules apply
+
+```
+pfSense Dashboard:
+Firewall → Schedules
+Click "+ Add"
+```
+
+**Schedule Configuration:**
+```
+Schedule Name: WorkingHours
+  (Letters and numbers only, no spaces)
+Description: Normal Working Hours
+```
+
+**Select Month/Days:**
+```
+Month: June_21 (example)
+Date: Click individual date (e.g., June 30)
+  Or click day header (Mon, Tue, etc.) for recurring weekly
+```
+
+**Set Time Range:**
+```
+Start Time: 1:15 AM (example - adjust for real time)
+Stop Time: 23:59 (nearly midnight)
+
+Note: Cannot cross midnight (must be within same day)
+Full day = 0:00 to 23:59
+```
+
+**Description:**
+```
+Time range description: Work day
+```
+
+**Save:**
+```
+Click "+ Add Time" → Click "Save"
+```
+
+**Result:** Schedule appears in Firewall/Schedules list
+
+### Step 2: Create Rule with Schedule
+
+**Why:** Apply rule only during specific times
+
+```
+Firewall → Rules → LAN
+Click "Add"
+```
+
+**Configure Rule (same as before):**
+```
+Action: Reject
+Interface: LAN
+Protocol: TCP/UDP
+Source: any
+Destination: any
+Port: HTTP (80)
+Description: Rule for Rejecting any website using http (80) port during Working Hours
+```
+
+**Advanced Options:**
+```
+Scroll down → Click "Display Advanced"
+```
+
+**Select Schedule:**
+```
+Schedule: WorkingHours (dropdown)
+Leave other options default
+```
+
+**Save:**
+```
+Click "Save" → Click "Apply Changes"
+```
+
+**Result:**
+- 1:15 AM - 11:59 PM: HTTP blocked
+- Outside this time: HTTP allowed
+
+---
+
+## IMPORTANT: Difference Between Actions
+
+| Action | Behavior | Speed | Use Case |
+|--------|----------|-------|----------|
+| **Block** | Drop packets silently | Slow (timeout) | Stealth mode |
+| **Reject** | Send "connection refused" | Fast | Better UX |
+| **Allow** | Permit traffic | N/A | Whitelist rules |
+
+---
+
+## CRITICAL CONCEPTS TO REMEMBER
+
+### 1. OSI Layer Differences
+```
+TP4 (Host Firewall): Layer 4 (Transport) + Application Layer
+  - Blocks per-application, per-port
+  
+TP5 & TP6 (Network Firewall): Layer 3-4 (Network/Transport)
+  - Blocks per-IP, per-domain, per-port network-wide
+```
+
+### 2. Rule Processing Order
+```
+Rules are processed TOP-TO-BOTTOM
+First matching rule wins
+
+Example:
+Rule 1: Block all HTTP
+Rule 2: Allow HTTP to 10.10.1.100
+→ Result: ALL HTTP blocked (Rule 1 matches first)
+
+Correct order:
+Rule 1: Allow HTTP to 10.10.1.100
+Rule 2: Block all HTTP
+→ Result: 10.10.1.100 gets HTTP, others blocked
+```
+
+### 3. Stateful Firewalls
+```
+Modern firewalls remember connections:
+- Outgoing: 10.10.1.11 → 84.53.185.208:80
+- Firewall allows return traffic automatically
+- Even if "no inbound rule" exists
+
+Old stateless: Would need explicit rules for both directions
+```
+
+### 4. Default Policy
+```
+Windows Firewall Default: DENY incoming, ALLOW outgoing
+pfSense Default: Configurable (usually DENY incoming)
+
+Security principle: "Default Deny" = safer than "Default Allow"
+```
+
+---
+
+## Common Errors & Solutions
+
+### Error: "Remote Desktop can't connect"
+**Causes:**
+- RDP rules blocked on firewall
+- Remote Desktop not enabled
+- Network connectivity issues
+
+**Fix:**
+```
+Windows Firewall → Advanced Settings
+→ Inbound Rules → Find RDP rules
+→ Enable (change from Block to Allow)
+```
+
+### Error: "Connection timed out" (FTP)
+**Cause:** FTP Traffic-In rule blocked
+
+**Fix:**
+```
+Windows Firewall → Inbound Rules
+→ FTP Server (FTP Traffic-In) → Allow
+```
+
+### Error: "This site can't be reached" (HTTP)
+**Cause:** pfSense HTTP port 80 rule blocked
+
+**Fix:**
+```
+pfSense → Firewall → Rules → LAN
+→ Find HTTP block rule → Delete or Disable
+→ Apply Changes
+```
+
+### Error: pfSense rule not taking effect
+**Cause:** Cache or system cache preventing immediate effect
+
+**Solution:**
+```
+1. Clear browser cache (Ctrl+Shift+Delete)
+2. Restart pfSense (Diagnostics → Reboot)
+3. Clear browser cache again
+4. Test again
+```
+
+---
+
+## Summary Table: TP4 vs TP5 vs TP6
+
+| Feature | TP4 | TP5 | TP6 |
+|---------|-----|-----|-----|
+| **Type** | Host-based | Network-based | Network-based |
+| **Target** | Individual machine | All network traffic | Specific port/protocol |
+| **Blocking** | By program/port | By domain/IP | By port number |
+| **Tool** | Windows Firewall | pfSense | pfSense |
+| **Scope** | Local computer | Entire LAN | Entire LAN |
+| **Granularity** | Per-application | Per-IP/domain | Per-port |
+| **Advanced** | Outbound rules | Aliases, NAT | Time-based schedules |
+
+---
+
+## Key Commands Quick Reference
+
+### Windows Commands
+```bash
+# Test RDP connectivity
+mstsc.exe
+# Or: Start → Remote Desktop Connection
+
+# Test FTP connectivity
+ftp 10.10.1.16
+# Username: Administrator
+# Password: admin@123
+
+# Test ping
+ping rediff.com
+# Shows IP address of domain
+
+# Test HTTP
+# Browser → http://certifiedhacker.com/
+```
+
+### pfSense Web Dashboard
+```
+https://10.10.1.1
+Username: admin
+Password: pfsense (default, changed to admin@123 in labs)
+```
+
+---
+
+## Why These Labs Matter (Real-World Context)
+
+### TP4 - Host-Based Firewall
+**Real-world:** Every corporate laptop has Windows Defender Firewall enabled
+- Prevents malware from opening backdoors
+- Blocks unauthorized remote access
+- Example: Ransomware can't spread via SMB if RDP is blocked
+
+### TP5 - Website Filtering
+**Real-world:** Corporations block malware domains
+- Block known phishing sites
+- Prevent data exfiltration to attacker servers
+- Example: Company blocks 10,000 malicious IPs using aliases
+
+### TP6 - Port Blocking
+**Real-world:** Force HTTPS adoption
+- Block HTTP on public networks
+- Ensure encrypted web traffic
+- Example: Corporate firewall blocks port 80, allows only 443
+
+---
+
+## Best Practices (Exam Tips)
+
+1. **Always specify source AND destination**
+   - Not just "block port 80" but "from any to any on port 80"
+
+2. **Use aliases for multiple items**
+   - Don't create 100 rules, create 1 alias with 100 items
+
+3. **Order rules correctly**
+   - Specific rules first, then general rules
+
+4. **Test after each change**
+   - Don't assume rule works until you verify
+
+5. **Document everything**
+   - Why is this rule here? When was it created?
+
+6. **Default DENY, whitelist exceptions**
+   - Block everything, then allow what's needed
+   - Opposite of default ALLOW (insecure)
+
+---
+
+## Exam Questions This Covers
+
+**Q: What's the difference between host-based and network firewalls?**
+A: Host-based (TP4) protects individual machines, network-based (TP5/TP6) protects entire networks.
+
+**Q: Why use aliases in pfSense?**
+A: Group multiple IPs/domains so 1 rule replaces 100 rules.
+
+**Q: What's the best action: Block or Reject?**
+A: Reject = faster feedback to user; Block = stealthier (hides firewall).
+
+**Q: How do time-based rules work?**
+A: Rule only applies during specified hours (working hours example).
+
+**Q: Why can't schedules cross midnight?**
+A: Firewall processes rules within 24-hour day; split into 2 rules if crossing midnight needed.
+
+---
